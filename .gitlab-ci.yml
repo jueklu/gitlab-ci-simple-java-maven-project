@@ -5,7 +5,7 @@ variables:
   DEPLOY_PORT_HOST: 8080  # Host port
   DEPLOY_PORT_CONT: 8080  # Container port
   CONTAINER_NAME: "simple-javen-maven-project"  # Name of the deployed container
-
+  # Set a custom Maven local repository path to avoid polluting the default location and enable caching
   MAVEN_OPTS: "-Dmaven.repo.local=/builds/$CI_PROJECT_NAMESPACE/$CI_PROJECT_NAME/.m2/repository"
 
 
@@ -22,18 +22,25 @@ test:
   image: maven:3.9.4-eclipse-temurin-17
   stage: test
   script:
+    # Navigate to the HelloMaven-app directory
     - cd HelloMaven-app
+    # Output a message to indicate the start of test execution
     - echo "Running Maven tests..."
+    # Run the tests using Maven
     - mvn test
+    # Generate an HTML test report using the Maven Surefire Report plugin
     - mvn surefire-report:report
   cache:
     paths:
+      # Cache the Maven dependencies to speed up subsequent builds
       - .m2/repository
   artifacts:
-    when: always
+    when: always  # Always upload artifacts, regardless of whether the job succeeds or fails
     paths:
-      - HelloMaven-app/target/surefire-reports/*.xml # Test results
-      - HelloMaven-app/target/site/surefire-report.html # Include the HTML report
+      # Collect XML test results
+      - HelloMaven-app/target/surefire-reports/*.xml
+      # Collect the HTML test report
+      - HelloMaven-app/target/site/surefire-report.html
     expire_in: 1 week
 
 
