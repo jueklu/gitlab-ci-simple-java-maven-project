@@ -1,0 +1,106 @@
+### Variables
+variables:
+  DEPLOY_IP: "192.168.70.6"  # Deployment server IP
+  DEPLOY_USER: "gitlab-deployment"  # Deployment server SSH user
+  DEPLOY_PORT_HOST: 8080  # Host port
+  DEPLOY_PORT_CONT: 8080  # Container port
+  CONTAINER_NAME: "simple-javen-maven-project"  # Name of the deployed container
+
+  MAVEN_OPTS: "-Dmaven.repo.local=/builds/$CI_PROJECT_NAMESPACE/$CI_PROJECT_NAME/.m2/repository"
+
+
+### Stages
+stages:
+  - test
+  - pages
+  - build
+  - deploy
+
+
+### Test
+test:
+  image: maven:3.9.4-eclipse-temurin-17
+  stage: test
+  script:
+    - cd HelloMaven-app
+    - echo "Running Maven tests..."
+    - mvn test
+    - mvn surefire-report:report
+  cache:
+    paths:
+      - .m2/repository
+  artifacts:
+    when: always
+    paths:
+      - HelloMaven-app/target/surefire-reports/*.xml # Test results
+      - HelloMaven-app/target/site/surefire-report.html # Include the HTML report
+    expire_in: 1 week
+
+
+### Deploy Test Results to GitLab Pages
+pages:
+  image: maven:3.9.4-eclipse-temurin-17
+  stage: pages
+  needs:
+    # Run this job only if the 'test' job succeeds
+    - test
+  script:
+    # Ensure the public directory exists
+    - mkdir -p public
+    # Move the report to the 'public/' directory for GitLab Pages
+    - mv HelloMaven-app/target/site/surefire-report.html public/index.html
+    # Debugging: List the public directory contents
+    - ls -l public
+  artifacts:
+    paths:
+      # Specify the 'public/' directory to be published via GitLab Pages
+      - public/
+
+
+### Build Container Image
+build_image:
+  image: docker:stable
+  stage: build
+  services:
+    - docker:dind
+  variables:
+    DOCKER_TLS_CERTDIR: ""
+  before_script:
+    # Login to GitLab Container Registry using predefined CI/CD variables
+    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" $CI_REGISTRY
+  script:
+    # Build the Docker image from the Dockerfile in the current directory
+    - docker build --pull -t "$CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG" .
+    # Push the built Docker image to the GitLab Container Registry
+    - docker push "$CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG"
+  rules: 
+    # Rule: Run this job only for main branch and if the Dockerfile exists
+    - if: $CI_COMMIT_BRANCH == "main"
+      exists:
+        - Dockerfile
+
+
+### Deploy Container to Virtual Machine
+deploy_container:
+  stage: deploy
+  image: alpine:latest
+  needs:
+    # Run this job only if the 'build_image' job succeeds
+    - build_image
+  before_script:
+    # Update the package index, install the OpenSSH client for SSH connections
+    - apk update && apk add openssh-client
+    # If the private SSH key file ($ID_RSA) exists, set secure permissions (read/write for the owner only)
+    - if [ -f "$ID_RSA" ]; then chmod og= $ID_RSA; fi
+  script:
+    #  SSH into the deployment server, log in to the GitLab Container registry
+    - ssh -i $ID_RSA -o StrictHostKeyChecking=no $DEPLOY_USER@$DEPLOY_IP "docker login -u gitlab-ci-token -p $CI_JOB_TOKEN $CI_REGISTRY"
+     # SSH into the deployment server, pull the image from the registry
+    - ssh -i $ID_RSA -o StrictHostKeyChecking=no $DEPLOY_USER@$DEPLOY_IP "docker pull $CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG"
+    # SSH into the deployment server, remove the existing container (if it exists)
+    - ssh -i $ID_RSA -o StrictHostKeyChecking=no $DEPLOY_USER@$DEPLOY_IP "docker container rm -f $CONTAINER_NAME || true"
+    # SSH into the deployment server, run the new container
+    - ssh -i $ID_RSA -o StrictHostKeyChecking=no $DEPLOY_USER@$DEPLOY_IP "docker run -d -p $DEPLOY_PORT_HOST:$DEPLOY_PORT_CONT --restart=unless-stopped --name $CONTAINER_NAME $CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG"
+  rules:
+    # Rule: Run this job only for main branch
+    - if: $CI_COMMIT_BRANCH == "main"
